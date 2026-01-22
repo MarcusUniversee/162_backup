@@ -110,6 +110,11 @@ int count_words(WordCount **wclist, FILE *infile) {
       is_word = false;
     }
   }
+  if (is_word) {
+    if (add_word(wclist, word) == 1) {
+      return 1;
+    }
+  }
   return 0;
 }
 
@@ -124,7 +129,7 @@ static bool wordcount_less(const WordCount *wc1, const WordCount *wc2) {
     }
     return 0;
   }
-  return wc1->count > wc2->count;
+  return wc1->count < wc2->count;
 }
 
 // In trying times, displays a helpful message.
