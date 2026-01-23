@@ -8,6 +8,6 @@ int main() {
     getrlimit(RLIMIT_NPROC, &lim);
     printf("process limit: %ld\n", lim.rlim_cur);
     getrlimit(RLIMIT_NOFILE, &lim);
-    printf("max file descriptors: %ld\n", lim.rlim_cur - 1);
+    printf("max file descriptors: %ld\n", lim.rlim_cur);
     return 0;
 }

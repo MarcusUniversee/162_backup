@@ -195,7 +195,9 @@ int main (int argc, char *argv[]) {
     if (count_mode) {
       total_words = num_words(infile);
     } else {
-      count_words(&word_counts, infile);
+      if (count_words(&word_counts, infile) == 1) {
+        return 1;
+      }
     }
   } else {
     // At least one file specified. Useful functions: fopen(), fclose().
@@ -203,10 +205,15 @@ int main (int argc, char *argv[]) {
     // found at argv[argc-1].
     for (int i = optind; i < argc; i++) {
       infile = fopen(argv[i], "r");
+      if (infile == NULL) {
+        return 1;
+      }
       if (count_mode) {
         total_words += num_words(infile);
       } else {
-        count_words(&word_counts, infile);
+        if (count_words(&word_counts, infile) == 1) {
+          return 1;
+        }
       }
     }
   }
