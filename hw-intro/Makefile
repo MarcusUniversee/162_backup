@@ -4,7 +4,7 @@ ifneq (,$(shell which i386-gcc))
 CC=i386-gcc
 endif
 
-CFLAGS?=-g
+CFLAGS?=-g -D CS162=True
 BINARIES=map limits
 
 default:
