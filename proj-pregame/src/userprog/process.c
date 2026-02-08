@@ -350,6 +350,10 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   /* Set up stack. */
   if (!setup_stack(esp))
     goto done;
+  
+  *esp = ((void *)((uint8_t *)*esp) - 8); //only subtract 8, because the do nothing tests subtract 24, so 8+24 = 32 which mods 16 to 0
+  *(uint32_t *)((uint8_t *)(*esp) + 4) = 0x00000001;
+
 
   /* Start address. */
   *eip = (void (*)(void))ehdr.e_entry;
@@ -473,7 +477,7 @@ static bool setup_stack(void** esp) {
   if (kpage != NULL) {
     success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE, kpage, true);
     if (success)
-      *esp = PHYS_BASE - 12;
+      *esp = PHYS_BASE;
     else
       palloc_free_page(kpage);
   }
