@@ -351,7 +351,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   if (!setup_stack(esp))
     goto done;
   
-  *esp = ((void *)((uint8_t *)*esp) - 8); //only subtract 8, because the do nothing tests subtract 24, so 8+24 = 32 which mods 16 to 0
+  *esp = ((void *)((uint8_t *)*esp) - 16); //only subtract 8, because the do nothing tests subtract 24, so 8+24 = 32 which mods 16 to 0
   *(uint32_t *)((uint8_t *)(*esp) + 4) = 0x00000001;
 
 
