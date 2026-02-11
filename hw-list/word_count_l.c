@@ -87,8 +87,6 @@ word_count_t* add_word(word_count_list_t* wclist, char* word) {
   w->word = word_cpy;
   free(word);
   list_push_back(wclist, &w->elem);
-  
-  
   return w;
 }
 
