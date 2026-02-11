@@ -41,16 +41,14 @@ size_t len_words(word_count_list_t* wclist) {
     return 0;
   }
   struct list_elem *e;
-  
+  pthread_mutex_lock(&wclist->lock);
   for (e = list_begin (&wclist->lst); e != list_end (&wclist->lst);
         e = list_next (e))
   {
-    pthread_mutex_lock(&wclist->lock);
-    word_count_t *f = list_entry (e, word_count_t, elem);
-    count += f->count;
-    pthread_mutex_unlock(&wclist->lock);
+      word_count_t *f = list_entry (e, word_count_t, elem);
+      count += f->count;
   }
-  
+  pthread_mutex_unlock(&wclist->lock);
   return count;
 }
 
@@ -59,18 +57,17 @@ word_count_t* find_word(word_count_list_t* wclist, char* word) {
     return NULL;
   }
   struct list_elem *e;
-  
+  pthread_mutex_lock(&wclist->lock);
   for (e = list_begin (&wclist->lst); e != list_end (&wclist->lst);
         e = list_next (e))
   {
-    pthread_mutex_lock(&wclist->lock);
     word_count_t *f = list_entry (e, word_count_t, elem);
     if (strcmp(f->word, word) == 0) {
       pthread_mutex_unlock(&wclist->lock);
       return f;
     }
-    pthread_mutex_unlock(&wclist->lock);
   }
+  pthread_mutex_unlock(&wclist->lock);
   return NULL;
 }
 
@@ -109,15 +106,14 @@ void fprint_words(word_count_list_t* wclist, FILE* outfile) {
   /* TODO */
   /* Please follow this format: fprintf(<file>, "%i\t%s\n", <count>, <word>); */
   struct list_elem *e;
-  
+  pthread_mutex_lock(&wclist->lock);
   for (e = list_begin (&wclist->lst); e != list_end (&wclist->lst);
         e = list_next (e))
   {
-    pthread_mutex_lock(&wclist->lock);
     word_count_t *f = list_entry (e, word_count_t, elem);
     fprintf(outfile, "%i\t%s\n", f->count, f->word);
-    pthread_mutex_unlock(&wclist->lock);
   }
+  pthread_mutex_unlock(&wclist->lock);
 }
 
 static bool less_list(const struct list_elem* ewc1, const struct list_elem* ewc2, void* aux) {
