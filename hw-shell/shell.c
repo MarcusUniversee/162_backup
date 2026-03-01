@@ -69,11 +69,13 @@ int cmd_pwd(unused struct tokens* tokens) {
 }
 
 int cmd_cd(struct tokens* tokens) {
-  if (tokens->tokens_length != 2) {
-    printf("Error: cd takes in one required argument");
+  if (tokens_get_length(tokens) != 2) {
+    printf("Error: cd takes in one required argument\n");
     return -1;
   }
-  chdir(tokens->tokens[1]);
+  if (chdir(tokens_get_token(tokens, 1))) {
+    printf("File path %s does not exist\n", tokens_get_token(tokens, 1));
+  }
   return 1;
 }
 
@@ -131,8 +133,37 @@ int main(unused int argc, unused char* argv[]) {
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
-      /* REPLACE this to run commands as programs. */
-      fprintf(stdout, "This shell doesn't know how to run programs.\n");
+      pid_t pid = fork();
+      if (pid < 0) {
+        fprintf(stdout, "Error while attempting to run program. Failed to create a child process\n");
+      } else if (pid == 0) {
+        //child
+        size_t l = tokens_get_length(tokens);
+        char *args[l + 1];
+        for (int i = 0; i < l; i++) {
+          args[i] = tokens_get_token(tokens, i);
+        }
+        args[l] = NULL;
+        //first check path
+        char* path = getenv("PATH");
+        char* executable = tokens_get_token(tokens, 0);
+        char* path_ptr = path;
+        char full_path[PATH_MAX];
+        char* dir;
+        while ((dir = strtok_r(path_ptr, ":", &path_ptr))) {
+          //need to add / after the dir
+          snprintf(full_path, sizeof(full_path), "%s/%s", dir, executable);
+          execv(full_path, args);
+        }
+        //then run directly
+        execv(executable, args);
+        fprintf(stderr, "Failed to execv program\n");
+        exit(1);
+      } else {
+        //parent
+        int status;
+        waitpid(pid, &status, 0);
+      }
     }
 
     if (shell_is_interactive)
