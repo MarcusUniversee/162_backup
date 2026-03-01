@@ -87,6 +87,47 @@ int lookup(char cmd[]) {
   return -1;
 }
 
+int redirect(struct tokens* tokens, char* args[]) {
+  size_t L = tokens_get_length(tokens);
+  for (int i = 0; i < L; i++) {
+    char *t = tokens_get_token(tokens, i);
+    if (strcmp(t, "<") == 0) {
+      //stdin
+      if (i + 1 < L) {
+        char* redir_file = tokens_get_token(tokens, i + 1);
+        //only allow reading
+        int file_fd = open(redir_file, O_RDONLY);
+        if (file_fd != -1) {
+          dup2(file_fd, STDIN_FILENO);
+          close(file_fd);
+          args[i] = NULL;
+        } else {
+          //failure
+          fprintf(stderr, "Failed to open file\n");
+          return 1;
+        }
+      }
+    } else if (strcmp(t, ">") == 0) {
+      //stdout
+      if (i + 1 < L) {
+        char* redir_file = tokens_get_token(tokens, i + 1);
+        //write only and create if does not exist, and replace old if exists
+        int file_fd = open(redir_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (file_fd != -1) {
+          dup2(file_fd, STDOUT_FILENO);
+          close(file_fd);
+          args[i] = NULL;
+        } else {
+          //failure
+          fprintf(stderr, "Failed to open file\n");
+          return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
 /* Intialization procedures for this shell */
 void init_shell() {
   /* Our shell is connected to standard input. */
@@ -137,13 +178,18 @@ int main(unused int argc, unused char* argv[]) {
       if (pid < 0) {
         fprintf(stdout, "Error while attempting to run program. Failed to create a child process\n");
       } else if (pid == 0) {
+        size_t L = tokens_get_length(tokens);
         //child
-        size_t l = tokens_get_length(tokens);
-        char *args[l + 1];
-        for (int i = 0; i < l; i++) {
+        char *args[L + 1];
+        for (int i = 0; i < L; i++) {
           args[i] = tokens_get_token(tokens, i);
         }
-        args[l] = NULL;
+        args[L] = NULL;
+
+        if (redirect(tokens, args)) {
+          exit(1);
+        }
+
         //first check path
         char* path = getenv("PATH");
         char* executable = tokens_get_token(tokens, 0);
