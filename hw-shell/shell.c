@@ -87,45 +87,55 @@ int lookup(char cmd[]) {
   return -1;
 }
 
-int redirect(struct tokens* tokens, char* args[]) {
-  size_t L = tokens_get_length(tokens);
-  for (int i = 0; i < L; i++) {
-    char *t = tokens_get_token(tokens, i);
-    if (strcmp(t, "<") == 0) {
-      //stdin
-      if (i + 1 < L) {
-        char* redir_file = tokens_get_token(tokens, i + 1);
-        //only allow reading
-        int file_fd = open(redir_file, O_RDONLY);
-        if (file_fd != -1) {
-          dup2(file_fd, STDIN_FILENO);
-          close(file_fd);
-          args[i] = NULL;
-        } else {
-          //failure
-          fprintf(stderr, "Failed to open file\n");
-          return 1;
-        }
+//redirects stdout or stdin into/from a file
+//args should be the tokens just from the running process segment
+//seg_len should be the length of args[]
+int redirect(char* args[], int seg_len) {
+  for (int i = 0; i < seg_len; i++) {
+    if (args[i] == NULL) {
+      continue;
+    }
+
+    //check i+1 just in case because < and > need something after
+    if (strcmp(args[i], "<") == 0 && i + 1 < seg_len) {
+      int fd = open(args[i + 1], O_RDONLY);
+      if (fd == -1) {
+        fprintf(stderr, "Failed to open file\n");
+        return 1;
       }
-    } else if (strcmp(t, ">") == 0) {
-      //stdout
-      if (i + 1 < L) {
-        char* redir_file = tokens_get_token(tokens, i + 1);
-        //write only and create if does not exist, and replace old if exists
-        int file_fd = open(redir_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (file_fd != -1) {
-          dup2(file_fd, STDOUT_FILENO);
-          close(file_fd);
-          args[i] = NULL;
-        } else {
-          //failure
-          fprintf(stderr, "Failed to open file\n");
-          return 1;
-        }
+      dup2(fd, STDIN_FILENO);
+      close(fd);
+      //set arguments to NULL to ignore
+      args[i] = NULL;
+      args[i + 1] = NULL;
+    } else if (strcmp(args[i], ">") == 0 && i + 1 < seg_len) {
+      //WRONLY to open with write. CREAT to create if it doesn't exist
+      //TRUNC to replace if file already exists. 0644 perms (general default)
+      int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd == -1) {
+        fprintf(stderr, "Failed to open file\n");
+        return 1;
       }
+      dup2(fd, STDOUT_FILENO);
+      close(fd);
+      //set arguments to NULL to ignore
+      args[i] = NULL;
+      args[i + 1] = NULL;
     }
   }
   return 0;
+}
+
+size_t count_pipes(struct tokens* tokens) {
+  int count = 0;
+  size_t L = tokens_get_length(tokens);
+  for (int i = 0; i < L; i++) {
+    char *t = tokens_get_token(tokens, i);
+    if (strcmp(t, "|") == 0) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 /* Intialization procedures for this shell */
@@ -161,60 +171,139 @@ int main(unused int argc, unused char* argv[]) {
   int line_num = 0;
 
   /* Please only print shell prompts when standard input is not a tty */
-  if (shell_is_interactive)
+  if (shell_is_interactive) {
     fprintf(stdout, "%d: ", line_num);
+
+    //ignore these signals if shell is in the foreground
+    signal(SIGINT,  SIG_IGN); //ctrl c
+    signal(SIGQUIT, SIG_IGN); //ctrl "\"
+    signal(SIGTSTP, SIG_IGN); //ctrl z
+    signal(SIGTTIN, SIG_IGN); //background input request
+    signal(SIGTTOU, SIG_IGN); //background output request
+  }
 
   while (fgets(line, 4096, stdin)) {
     /* Split our line into words. */
     struct tokens* tokens = tokenize(line);
 
-    /* Find which built-in function to run. */
-    int fundex = lookup(tokens_get_token(tokens, 0));
-
+    //run a separate fork for every process
+    size_t n = count_pipes(tokens) + 1; //number of programs
+    int fundex = -1;
+    if (n == 1) {
+      fundex = lookup(tokens_get_token(tokens, 0));
+    }
+    //if its just a single built-in cmd, just directly run things
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
-      pid_t pid = fork();
-      if (pid < 0) {
-        fprintf(stdout, "Error while attempting to run program. Failed to create a child process\n");
-      } else if (pid == 0) {
-        size_t L = tokens_get_length(tokens);
-        //child
-        char *args[L + 1];
-        for (int i = 0; i < L; i++) {
-          args[i] = tokens_get_token(tokens, i);
+      int pipe_arr[n - 1][2];
+      for (int i=0; i<n-1; i++) {
+        if (pipe(pipe_arr[i]) == -1) {
+          fprintf(stderr, "Error attempting to pipe\n");
+          return 1;
         }
-        args[L] = NULL;
+      }
+      pid_t pids[n];
+      size_t L = tokens_get_length(tokens);
+      //need to keep track of where each process starts and ends inside
+      //of the tokens to run full line
+      int seg_start = 0;
 
-        if (redirect(tokens, args)) {
+      for (int i = 0; i < n; i++) {
+        //get end of segment by searching for |
+        int seg_end = seg_start;
+        while (seg_end < L && strcmp(tokens_get_token(tokens, seg_end), "|") != 0)
+          seg_end += 1;
+
+        pids[i] = fork();
+        if (pids[i] < 0) {
+          fprintf(stderr, "Error while attempting to run program. Failed to create a child process\n");
+          return 1;
+        }
+        if (pids[i] == 0) {
+          //CHILD
+          //set child to its own process group. duplicate of below because
+          //we do not know if parent or child will run first
+          setpgid(0, pids[0]);
+
+          //enable all the signals, since it will only do it for the process group its in
+          signal(SIGINT,  SIG_DFL);
+          signal(SIGQUIT, SIG_DFL);
+          signal(SIGTSTP, SIG_DFL);
+          signal(SIGTTIN, SIG_DFL);
+          signal(SIGTTOU, SIG_DFL);
+          //pipe from previous stdin and pipe to next stdout
+          if (i < n - 1) {
+            dup2(pipe_arr[i][1], STDOUT_FILENO);
+          }
+          if (i > 0) {
+            dup2(pipe_arr[i - 1][0], STDIN_FILENO);
+          }
+          //close everything
+          for (int j = 0; j < n - 1; j++) {
+            close(pipe_arr[j][0]);
+            close(pipe_arr[j][1]);
+          }
+
+          int seg_len = seg_end - seg_start; //# of total args
+          char *args[seg_len + 1];
+          for (int j = 0; j < seg_len; j++) {
+            args[j] = tokens_get_token(tokens, seg_start + j);
+          }
+          args[seg_len] = NULL;
+
+          int fundex = lookup(args[0]);
+          if (fundex >= 0) {
+            cmd_table[fundex].fun(tokens);
+            exit(0);
+          }
+
+          //redirect in the case of > and <
+          if (redirect(args, seg_len)) {
+            exit(1);
+          }
+
+          char* path = getenv("PATH");
+          char* executable = args[0];
+          char* path_ptr = path;
+          char full_path[PATH_MAX];
+          char* dir;
+          //attempt to execv, if it fails, it will continue
+          //if not, this code should not run anymore
+          while ((dir = strtok_r(path_ptr, ":", &path_ptr))) {
+            snprintf(full_path, sizeof(full_path), "%s/%s", dir, executable);
+            execv(full_path, args);
+          }
+          execv(executable, args);
+          fprintf(stderr, "Failed to execv program\n");
           exit(1);
         }
-
-        //first check path
-        char* path = getenv("PATH");
-        char* executable = tokens_get_token(tokens, 0);
-        char* path_ptr = path;
-        char full_path[PATH_MAX];
-        char* dir;
-        while ((dir = strtok_r(path_ptr, ":", &path_ptr))) {
-          //need to add / after the dir
-          snprintf(full_path, sizeof(full_path), "%s/%s", dir, executable);
-          execv(full_path, args);
-        }
-        //then run directly
-        execv(executable, args);
-        fprintf(stderr, "Failed to execv program\n");
-        exit(1);
-      } else {
-        //parent
-        int status;
-        waitpid(pid, &status, 0);
+        //PARENT
+        //set child to its own process group. duplicate of above because
+        //we do not know if parent or child will run first
+        setpgid(pids[i], pids[0]);
+        seg_start = seg_end + 1; //next segment, going past |
       }
-    }
 
-    if (shell_is_interactive)
+      //PARENT
+      int status;
+      for (int i = 0; i < n - 1; i++) {
+        close(pipe_arr[i][0]);
+        close(pipe_arr[i][1]);
+      }
+      //set the child processes group as the foreground
+      if (shell_is_interactive) {
+        tcsetpgrp(shell_terminal, pids[0]);
+      }
+      //wait for every single child process to finish
+      for (int i = 0; i < n; i++)
+        waitpid(pids[i], &status, WUNTRACED);
+    }
+    if (shell_is_interactive) {
       /* Please only print shell prompts when standard input is not a tty */
+      tcsetpgrp(shell_terminal, shell_pgid); //return foreground to old shell
       fprintf(stdout, "%d: ", ++line_num);
+    }
 
     /* Clean up memory */
     tokens_destroy(tokens);
