@@ -96,7 +96,6 @@ int cmd_cd(struct tokens* tokens) {
 int cmd_wait(unused struct tokens* tokens) {
   int status;
   for (int i=0; i<background_count; i++) {
-    if (background_pids[i] == -1) continue; //removed by fg
     waitpid(background_pids[i], &status, 0);
   }
   background_count = 0;
@@ -104,26 +103,30 @@ int cmd_wait(unused struct tokens* tokens) {
 }
 
 int cmd_fg(struct tokens* tokens) {
-  if (tokens_get_length(tokens) != 2) {
-    printf("Error: fg takes in one required argument\n");
+  size_t L = tokens_get_length(tokens);
+  pid_t target_gpid;
+  if (L == 1) {
+    if (current_gpid == -1) {
+      printf("Error: fg has no current job\n");
+      return -1;
+    }
+    target_gpid = current_gpid;
+  } else if (L == 2) {
+    int pid = atoi(tokens_get_token(tokens, 1));
+    target_gpid = getpgid(pid);
+  } else {
+    printf("Error: fg takes in zero or one arguments\n");
     return -1;
   }
-  int pid = atoi(tokens_get_token(tokens, 1));
-  int pid_group = getpgid(pid);
-  tcsetpgrp(shell_terminal, pid_group);
-  killpg(pid_group, SIGCONT);
+
+  tcsetpgrp(shell_terminal, target_gpid);
+  killpg(target_gpid, SIGCONT);
   int status;
-  waitpid(-pid_group, &status, WUNTRACED);
+  waitpid(-target_gpid, &status, WUNTRACED);
   tcsetpgrp(shell_terminal, shell_pgid);
   if (WIFSTOPPED(status)) {
     //handle the edge case where it can get restopped
-    current_gpid = pid_group;
-  } else {
-    //completed! remove from background
-    for (int i = 0; i < background_count; i++) {
-      if (background_pids[i] == pid_group)
-        background_pids[i] = -1;
-    }
+    current_gpid = target_gpid;
   }
   return 1;
 }
