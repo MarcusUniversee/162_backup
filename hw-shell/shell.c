@@ -15,6 +15,7 @@
 
 /* Convenience macro to silence compiler warnings about unused function parameters. */
 #define unused __attribute__((unused))
+#define MAX_BACKGROUND_PROCESSES 128
 #define PATH_MAX 4096
 
 /* Whether the shell is connected to an actual terminal or not. */
@@ -29,10 +30,20 @@ struct termios shell_tmodes;
 /* Process group id for the shell */
 pid_t shell_pgid;
 
+//keep track globally of all background
+pid_t background_pids[MAX_BACKGROUND_PROCESSES];
+int background_count = 0;
+
+//most recently launched
+pid_t current_gpid = -1;
+
 int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
 int cmd_pwd(struct tokens* tokens);
 int cmd_cd(struct tokens* tokens);
+int cmd_wait(struct tokens* tokens);
+int cmd_fg(struct tokens* tokens);
+int cmd_bg(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -49,6 +60,9 @@ fun_desc_t cmd_table[] = {
     {cmd_exit, "exit", "exit the command shell"},
     {cmd_pwd, "pwd", "prints the current working directory"},
     {cmd_cd, "cd", "changes the working directory to the listed directory"},
+    {cmd_wait, "wait", "waits until all background jobs are finished before returning"},
+    {cmd_fg, "fg", "move process with id pid to the foreground and resume"},
+    {cmd_bg, "bg", "resume paused background process, or most recently launched"}
 };
 
 /* Prints a helpful description for the given command */
@@ -76,6 +90,63 @@ int cmd_cd(struct tokens* tokens) {
   if (chdir(tokens_get_token(tokens, 1))) {
     printf("File path %s does not exist\n", tokens_get_token(tokens, 1));
   }
+  return 1;
+}
+
+int cmd_wait(unused struct tokens* tokens) {
+  int status;
+  for (int i=0; i<background_count; i++) {
+    if (background_pids[i] == -1) continue; //removed by fg
+    waitpid(background_pids[i], &status, 0);
+  }
+  background_count = 0;
+  return 1;
+}
+
+int cmd_fg(struct tokens* tokens) {
+  if (tokens_get_length(tokens) != 2) {
+    printf("Error: fg takes in one required argument\n");
+    return -1;
+  }
+  int pid = atoi(tokens_get_token(tokens, 1));
+  int pid_group = getpgid(pid);
+  tcsetpgrp(shell_terminal, pid_group);
+  killpg(pid_group, SIGCONT);
+  int status;
+  waitpid(-pid_group, &status, WUNTRACED);
+  tcsetpgrp(shell_terminal, shell_pgid);
+  if (WIFSTOPPED(status)) {
+    //handle the edge case where it can get restopped
+    current_gpid = pid_group;
+  } else {
+    //completed! remove from background
+    for (int i = 0; i < background_count; i++) {
+      if (background_pids[i] == pid_group)
+        background_pids[i] = -1;
+    }
+  }
+  return 1;
+}
+
+int cmd_bg(struct tokens* tokens) {
+  size_t L = tokens_get_length(tokens);
+  pid_t target_gpid;
+  if (L == 1) {
+    if (current_gpid == -1) {
+      printf("Error: bg has no current job\n");
+      return -1;
+    }
+    target_gpid = current_gpid;
+  } else if (L == 2) {
+    int pid = atoi(tokens_get_token(tokens, 1));
+    target_gpid = getpgid(pid);
+  } else {
+    printf("Error: bg takes in zero or one arguments\n");
+    return -1;
+  }
+  killpg(target_gpid, SIGCONT);
+  //add to background_pids for wait
+  background_pids[background_count++] = target_gpid;
   return 1;
 }
 
@@ -185,6 +256,10 @@ int main(unused int argc, unused char* argv[]) {
   while (fgets(line, 4096, stdin)) {
     /* Split our line into words. */
     struct tokens* tokens = tokenize(line);
+    size_t L = tokens_get_length(tokens);
+
+    bool background = false;
+    if (L > 0 && strcmp(tokens_get_token(tokens, L-1), "&") == 0) background = true;
 
     //run a separate fork for every process
     size_t n = count_pipes(tokens) + 1; //number of programs
@@ -204,7 +279,6 @@ int main(unused int argc, unused char* argv[]) {
         }
       }
       pid_t pids[n];
-      size_t L = tokens_get_length(tokens);
       //need to keep track of where each process starts and ends inside
       //of the tokens to run full line
       int seg_start = 0;
@@ -245,7 +319,12 @@ int main(unused int argc, unused char* argv[]) {
             close(pipe_arr[j][1]);
           }
 
+          //remove the & if it exists
+          if (i == n-1 && background) {
+            seg_end -= 1;
+          }
           int seg_len = seg_end - seg_start; //# of total args
+          
           char *args[seg_len + 1];
           for (int j = 0; j < seg_len; j++) {
             args[j] = tokens_get_token(tokens, seg_start + j);
@@ -291,13 +370,29 @@ int main(unused int argc, unused char* argv[]) {
         close(pipe_arr[i][0]);
         close(pipe_arr[i][1]);
       }
-      //set the child processes group as the foreground
-      if (shell_is_interactive) {
-        tcsetpgrp(shell_terminal, pids[0]);
+
+      if (background) {
+        //run in background
+        //save all the child processes so that we can wait for it later
+        for (int i=0; i<n; i++) {
+          background_pids[background_count] = pids[i];
+          background_count += 1;
+        }
+        current_gpid = pids[0];
+      } else {
+        //do not run in background
+        //set the child processes group as the foreground
+        if (shell_is_interactive) {
+          tcsetpgrp(shell_terminal, pids[0]);
+        }
+        //wait for every single child process to finish
+        for (int i = 0; i < n; i++) {
+          waitpid(pids[i], &status, WUNTRACED);
+        }
+        if (WIFSTOPPED(status)) {
+          current_gpid = pids[0];
+        }
       }
-      //wait for every single child process to finish
-      for (int i = 0; i < n; i++)
-        waitpid(pids[i], &status, WUNTRACED);
     }
     if (shell_is_interactive) {
       /* Please only print shell prompts when standard input is not a tty */
