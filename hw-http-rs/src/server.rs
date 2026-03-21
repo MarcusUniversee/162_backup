@@ -98,8 +98,10 @@ async fn handle_socket(mut socket: TcpStream) -> Result<()> {
                     let link = format_href(&file_path_str, &name_str);
                     socket.write_all((&link).as_bytes()).await?;
                 }
-                let parent = "parent";
-                let parent_link = format_href(&relative_path_str, &parent);
+                let parent_path = Path::new(relative_path_str).parent().unwrap();
+                let parent_path_str = parent_path.as_os_str().to_str().unwrap();
+                let parent_link = format_href(parent_path_str, "parent");
+
                 socket.write_all((&parent_link).as_bytes()).await?;
             }
         }
