@@ -8,29 +8,26 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#include "../pintos/src/lib/kernel/list.h"
+#include <stdbool.h>
 
 typedef struct block {
   size_t size;
   bool free;
   
-  struct list_elem elem;
+  struct block* next;
+  struct block* prev;
 } block_t;
 
-static struct list heap;
-static bool heap_init = false;
+static block_t* heap = NULL;
 
 void* mm_malloc(size_t size) {
-  if (!heap_init) {
-    list_init(&heap);
-    heap_init = true;
-  }
   if (size == 0) {
     return NULL;
   }
-  struct list_elem* e;
-  for (e = list_begin(&heap); e != list_end(&heap); e = list_next(e)) {
-    block_t* blk = list_entry(e, block_t, elem);
+  block_t* last = NULL;
+  block_t* blk;
+  for (blk = heap; blk != NULL; blk = blk->next) {
+    last = blk;
     if (blk->free) {
       //check for free block
       if (blk->size > size + sizeof(block_t)) {
@@ -47,7 +44,12 @@ void* mm_malloc(size_t size) {
         block_t* new_blk = (block_t*) ((char*)(blk + 1) + blk->size);
         new_blk->free = true;
         new_blk->size = new_size;
-        list_insert(list_next(&blk->elem), &new_blk->elem);
+        new_blk->prev = blk;
+        new_blk->next = blk->next;
+        blk->next = new_blk;
+        if (new_blk->next != NULL) {
+          new_blk->next->prev = new_blk;
+        }
         return ptr;
       } else if (blk->size >= size) {
         //allocate entire block, but do not allocate a new one
@@ -59,23 +61,26 @@ void* mm_malloc(size_t size) {
     }
   }
   //we need to allocate more free space
-  block_t* blk = sbrk(sizeof(block_t) + size);
-  if (blk == (void*)-1) {
+  block_t* new_blk = sbrk(sizeof(block_t) + size);
+  if (new_blk == (void*)-1) {
     return NULL;
   }
-  blk->size = size;
-  blk->free = false;
-  list_push_back(&heap, &blk->elem);
-  void* ptr = (void*)(blk + 1);
+  new_blk->size = size;
+  new_blk->free = false;
+  new_blk->next = NULL;
+  new_blk->prev = last;
+  if (last != NULL) {
+    last->next = new_blk;
+  } else {
+    //set to head
+    heap = new_blk;
+  }
+  void* ptr = (void*)(new_blk + 1);
   memset(ptr, 0, size);
   return ptr;
 }
 
 void* mm_realloc(void* ptr, size_t size) {
-  if (!heap_init) {
-    list_init(&heap);
-    heap_init = true;
-  }
   //edge case
   if (size == 0) {
     mm_free(ptr);
@@ -102,10 +107,6 @@ void* mm_realloc(void* ptr, size_t size) {
 }
 
 void mm_free(void* ptr) {
-  if (!heap_init) {
-    list_init(&heap);
-    heap_init = true;
-  }
   if (ptr == NULL) {
     return;
   }
@@ -113,21 +114,25 @@ void mm_free(void* ptr) {
   block_t* blk = (block_t*)ptr - 1;
   blk->free = true;
   //coalescse
-  struct list_elem* e;
-  //check the block in front of it
-  e = list_next(&blk->elem);
-  block_t* next_blk = list_entry(e, block_t, elem);
-  if (next_blk->free) {
+  //check next
+  block_t* next_blk = blk->next;
+  if (next_blk != NULL && next_blk->free) {
     //add next block to current (metadata + space)
     blk->size = blk->size + sizeof(block_t) + next_blk->size;
-    list_remove(e);
+    //removal
+    blk->next = next_blk->next;
+    if (next_blk->next != NULL) {
+      next_blk->next->prev = blk;
+    }
   }
   //check block behind it
-  e = list_prev(&blk->elem);
-  block_t* prev_blk = list_entry(e, block_t, elem);
-  if (prev_blk->free) {
+  block_t* prev_blk = blk->prev;
+  if (prev_blk != NULL && prev_blk->free) {
     //add current block to previous
     prev_blk->size = prev_blk->size + blk->size + sizeof(block_t);
-    list_remove(&blk->elem);
+    prev_blk->next = blk->next;
+    if (blk->next != NULL) {
+      blk->next->prev = prev_blk;
+    }
   }
 }
