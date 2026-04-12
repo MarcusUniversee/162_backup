@@ -84,6 +84,9 @@ void* put_1_svc(pairing* argp, struct svc_req *rqstp) {
 
 buf* get_1_svc(buf* argp, struct svc_req *rqstp) {
   static buf result;
+  free(result.buf_val);
+  result.buf_val = NULL;
+  result.buf_len = 0;
 
   GBytes *key = g_bytes_new(argp->buf_val, argp->buf_len);
   GBytes *value = g_hash_table_lookup(ht, key);
@@ -91,7 +94,8 @@ buf* get_1_svc(buf* argp, struct svc_req *rqstp) {
   if (value != NULL) {
     long unsigned int len;
     const char *data = g_bytes_get_data(value, &len); /* Sets len = 5. */
-    result.buf_val = data;
+    result.buf_val = malloc(len);
+    memcpy(result.buf_val, data, len);
     result.buf_len = len;
   }
   return &result;
