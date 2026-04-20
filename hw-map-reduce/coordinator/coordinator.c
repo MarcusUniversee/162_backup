@@ -165,7 +165,37 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
   result.args.args_len = 0;
 
   /* TODO */
-  if (state->n_map > 0) {
+  if (state->n_reduce > 0){
+    printf("running reduce\n");
+    state->n_reduce--;
+    //remove the first element
+    GList* next_job = g_list_first(state->reduce_jobs);
+    int job_id = GPOINTER_TO_INT(next_job->data);
+
+    GBytes *key = g_bytes_new(&job_id, sizeof(int));
+    GBytes *value = g_hash_table_lookup(state->ht, key);
+    g_bytes_unref(key);
+
+    if (value == NULL) {
+      return &result;
+    }
+    job **data_ptr = g_bytes_get_data(value, NULL);
+    job *data = *data_ptr;
+    result.wait = false;
+    result.reduce = true;
+    result.job_id = job_id;
+    result.output_dir = data->req->output_dir;
+    result.app = data->req->app;
+    data->req->n_reduce--;
+    result.task = data->total_reduce_num - data->req->n_reduce - 1;
+    if (data->req->n_reduce == 0) {
+        state->reduce_jobs = g_list_delete_link(state->reduce_jobs, state->reduce_jobs);
+    }
+    result.n_reduce = data->total_reduce_num;
+    result.n_map = data->total_map_num;
+    result.args.args_len = data->req->args.args_len;
+    result.args.args_val = data->req->args.args_val;
+  } else if (state->n_map > 0) {
     printf("running map\n");
     state->n_map--;
     //remove the first element
@@ -198,36 +228,6 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     result.args.args_len = data->req->args.args_len;
     result.args.args_val = data->req->args.args_val;
 
-  } else if (state->n_reduce > 0){
-    printf("running reduce\n");
-    state->n_reduce--;
-    //remove the first element
-    GList* next_job = g_list_first(state->reduce_jobs);
-    int job_id = GPOINTER_TO_INT(next_job->data);
-
-    GBytes *key = g_bytes_new(&job_id, sizeof(int));
-    GBytes *value = g_hash_table_lookup(state->ht, key);
-    g_bytes_unref(key);
-
-    if (value == NULL) {
-      return &result;
-    }
-    job **data_ptr = g_bytes_get_data(value, NULL);
-    job *data = *data_ptr;
-    result.wait = false;
-    result.reduce = true;
-    result.job_id = job_id;
-    result.output_dir = data->req->output_dir;
-    result.app = data->req->app;
-    data->req->n_reduce--;
-    result.task = data->total_reduce_num - data->req->n_reduce - 1;
-    if (data->req->n_reduce == 0) {
-        state->reduce_jobs = g_list_delete_link(state->reduce_jobs, state->reduce_jobs);
-    }
-    result.n_reduce = data->total_reduce_num;
-    result.n_map = data->total_map_num;
-    result.args.args_len = data->req->args.args_len;
-    result.args.args_val = data->req->args.args_val;
   }
   return &result;
 }
