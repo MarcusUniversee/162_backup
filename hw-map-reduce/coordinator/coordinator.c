@@ -57,12 +57,43 @@ int* example_1_svc(int* argp, struct svc_req* rqstp) {
 }
 
 /* SUBMIT_JOB RPC implementation. */
+/*
+Assign and return a unique job ID (starting from 0 and increasing)
+Keep track of the current order of jobs in the queue
+Store job information in a manner that allows quick lookup by job ID
+Validate the provided application name
+*/
 int* submit_job_1_svc(submit_job_request* argp, struct svc_req* rqstp) {
   static int result;
 
   printf("Received submit job request\n");
 
   /* TODO */
+  int job_id = state->cur_job_id++;
+  app app_ = get_app(argp->app);
+
+  if (app_.name == NULL) {
+    result = -(job_id + 1);
+    return &result;
+  }
+
+  job* new_job = create_job(job_id, argp);
+  if (new_job == NULL) {
+    result = -(job_id + 1);
+    return &result;
+  }
+  result = job_id;
+
+  state->map_jobs = g_list_append(state->map_jobs, GINT_TO_POINTER(job_id));
+  state->n_map += argp->files.files_len;
+
+  GBytes *key = g_bytes_new(&job_id, sizeof(int)); 
+  GBytes *value = g_bytes_new(&new_job, sizeof(job*));
+  g_hash_table_replace(state->ht, key, value);
+  
+
+  // app app_ get_app(argp->app);
+  // app_->map(argp->args);
 
   /* Do not modify the following code. */
   /* BEGIN */
@@ -79,7 +110,36 @@ int* submit_job_1_svc(submit_job_request* argp, struct svc_req* rqstp) {
 poll_job_reply* poll_job_1_svc(int* argp, struct svc_req* rqstp) {
   static poll_job_reply result;
 
+  result.done = false;
+  result.failed = false;
+  result.invalid_job_id = false;
+
   printf("Received poll job request\n");
+
+  GBytes *key = g_bytes_new(argp, sizeof(int));
+  GBytes *value = g_hash_table_lookup(state->ht, key);
+  g_bytes_unref(key);
+
+  if (value == NULL) {
+    result.invalid_job_id = true;
+    return &result;
+  }
+
+  const job **data_ptr = g_bytes_get_data(value, NULL);
+  const job *data = *data_ptr;
+
+  int status = data->status;
+
+  switch (status) {
+    case 1:
+      result.done = true;
+      break;
+    case 2:
+      result.failed = true;
+      break;
+    default:
+      //do nothing
+  }
 
   /* TODO */
 
@@ -87,6 +147,13 @@ poll_job_reply* poll_job_1_svc(int* argp, struct svc_req* rqstp) {
 }
 
 /* GET_TASK RPC implementation. */
+/*
+Set task to a map task number between 0 and n_map-1 inclusive or a reduce task number between 0 and n_reduce-1 inclusive.
+Set file to the file to process for map tasks.
+Set wait to false if a task should be executed.
+Set reduce to false if the assigned task is a map task.
+Set job_id, output_dir, app, n_reduce, n_map, and args to the current job’s corresponding parameters.
+Once you are done, sanity-check that tasks are being assigned correctly by inserting logging statements.*/
 get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
   static get_task_reply result;
 
@@ -98,7 +165,68 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
   result.args.args_len = 0;
 
   /* TODO */
+  if (state->n_map > 0) {
+    state->n_map--;
+    //remove the first element
+    GList* next_job = g_list_first(state->map_jobs);
+    int job_id = GPOINTER_TO_INT(next_job->data);
 
+    GBytes *key = g_bytes_new(&job_id, sizeof(int));
+    GBytes *value = g_hash_table_lookup(state->ht, key);
+    g_bytes_unref(key);
+
+    if (value == NULL) {
+      return &result;
+    }
+    job **data_ptr = g_bytes_get_data(value, NULL);
+    job *data = *data_ptr;
+    result.file = *data->req->files.files_val;
+    data->req->files.files_val++;
+    data->req->files.files_len--;
+    result.task = data->total_map_num - data->req->files.files_len - 1;
+    if (data->req->files.files_len == 0) {
+      state->map_jobs = g_list_delete_link(state->map_jobs, state->map_jobs);
+    }
+    result.wait = false;
+    result.reduce = false;
+    result.job_id = job_id;
+    result.output_dir = data->req->output_dir;
+    result.app = data->req->app;
+    result.n_reduce = data->total_reduce_num;
+    result.n_map = data->total_map_num;
+    result.args.args_len = data->req->args.args_len;
+    result.args.args_val = data->req->args.args_val;
+
+  } else if (state->n_reduce > 0){
+    state->n_reduce--;
+    //remove the first element
+    GList* next_job = g_list_first(state->reduce_jobs);
+    int job_id = GPOINTER_TO_INT(next_job->data);
+
+    GBytes *key = g_bytes_new(&job_id, sizeof(int));
+    GBytes *value = g_hash_table_lookup(state->ht, key);
+    g_bytes_unref(key);
+
+    if (value == NULL) {
+      return &result;
+    }
+    job **data_ptr = g_bytes_get_data(value, NULL);
+    job *data = *data_ptr;
+    result.wait = false;
+    result.reduce = true;
+    result.job_id = job_id;
+    result.output_dir = data->req->output_dir;
+    result.app = data->req->app;
+    data->req->n_reduce--;
+    result.task = data->total_reduce_num - data->req->n_reduce - 1;
+    if (data->req->n_reduce == 0) {
+        state->reduce_jobs = g_list_delete_link(state->reduce_jobs, state->reduce_jobs);
+    }
+    result.n_reduce = data->total_reduce_num;
+    result.n_map = data->total_map_num;
+    result.args.args_len = data->req->args.args_len;
+    result.args.args_val = data->req->args.args_val;
+  }
   return &result;
 }
 
@@ -107,8 +235,33 @@ void* finish_task_1_svc(finish_task_request* argp, struct svc_req* rqstp) {
   static char* result;
 
   printf("Received finish task request\n");
+  GBytes *key = g_bytes_new(&argp->job_id, sizeof(int));
+  GBytes *value = g_hash_table_lookup(state->ht, key);
+  g_bytes_unref(key);
 
+  if (value == NULL) {
+    return (void*) &result;
+  }
+  job **data_ptr = g_bytes_get_data(value, NULL);
+  job *data = *data_ptr;
+  if (!argp->success) {
+    data->status = 2;
+    return (void*) &result;
+  }
   /* TODO */
+  if (argp->reduce) {
+    //reduce
+    data->reduces_completed++;
+    if (data->reduces_completed == data->total_reduce_num) {
+      data->status = 1;
+    }
+  } else {
+    data->maps_completed++;
+    if (data->maps_completed == data->total_map_num) {
+      state->reduce_jobs = g_list_append(state->reduce_jobs, GINT_TO_POINTER(argp->job_id));
+      state->n_reduce += data->total_reduce_num;
+    }
+  }
 
   return (void*)&result;
 }
@@ -120,4 +273,10 @@ void coordinator_init(coordinator** coord_ptr) {
   coordinator* coord = *coord_ptr;
 
   /* TODO */
+  coord->cur_job_id = 0;
+  coord->ht = g_hash_table_new(g_bytes_hash, g_bytes_equal);
+  coord->map_jobs = NULL;
+  coord->reduce_jobs = NULL;
+  coord->n_map = 0;
+  coord->n_reduce = 0;
 }
