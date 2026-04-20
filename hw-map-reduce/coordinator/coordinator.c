@@ -84,8 +84,12 @@ int* submit_job_1_svc(submit_job_request* argp, struct svc_req* rqstp) {
   }
   result = job_id;
 
-  state->map_jobs = g_list_append(state->map_jobs, GINT_TO_POINTER(job_id));
-  state->n_map += argp->files.files_len;
+  if (state->cur_map_job == -1 && state->cur_reduce_job == -1 && state->job_queue == NULL) {
+    state->cur_map_job = job_id;
+    state->n_map += argp->files.files_len;
+  } else {
+      state->job_queue = g_list_append(state->job_queue, GINT_TO_POINTER(job_id));
+  }
 
   GBytes *key = g_bytes_new(&job_id, sizeof(int)); 
   GBytes *value = g_bytes_new(&new_job, sizeof(job*));
@@ -169,8 +173,7 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     printf("running map\n");
     state->n_map--;
     //remove the first element
-    GList* next_job = g_list_first(state->map_jobs);
-    int job_id = GPOINTER_TO_INT(next_job->data);
+    int job_id = state->cur_map_job;
 
     GBytes *key = g_bytes_new(&job_id, sizeof(int));
     GBytes *value = g_hash_table_lookup(state->ht, key);
@@ -186,7 +189,7 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     data->req->files.files_len--;
     result.task = data->total_map_num - data->req->files.files_len - 1;
     if (data->req->files.files_len == 0) {
-      state->map_jobs = g_list_delete_link(state->map_jobs, state->map_jobs);
+      state->cur_map_job = -1;
     }
     result.wait = false;
     result.reduce = false;
@@ -202,8 +205,7 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     printf("running reduce\n");
     state->n_reduce--;
     //remove the first element
-    GList* next_job = g_list_first(state->reduce_jobs);
-    int job_id = GPOINTER_TO_INT(next_job->data);
+    int job_id = state->cur_reduce_job;
 
     GBytes *key = g_bytes_new(&job_id, sizeof(int));
     GBytes *value = g_hash_table_lookup(state->ht, key);
@@ -222,7 +224,7 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     data->req->n_reduce--;
     result.task = data->total_reduce_num - data->req->n_reduce - 1;
     if (data->req->n_reduce == 0) {
-        state->reduce_jobs = g_list_delete_link(state->reduce_jobs, state->reduce_jobs);
+      state->cur_reduce_job = -1;
     }
     result.n_reduce = data->total_reduce_num;
     result.n_map = data->total_map_num;
@@ -256,11 +258,24 @@ void* finish_task_1_svc(finish_task_request* argp, struct svc_req* rqstp) {
     data->reduces_completed++;
     if (data->reduces_completed == data->total_reduce_num) {
       data->status = 1;
+      if (state->job_queue != NULL) {
+        int new_job_id = GPOINTER_TO_INT(g_list_first(state->job_queue)->data);
+        state->job_queue = g_list_delete_link(state->job_queue, state->job_queue);
+
+        GBytes *new_key = g_bytes_new(&new_job_id, sizeof(int));
+        GBytes *new_value = g_hash_table_lookup(state->ht, new_key);
+        g_bytes_unref(new_key);
+
+        job **new_data_ptr = (job **)g_bytes_get_data(new_value, NULL);
+        job *new_data = *new_data_ptr;
+        state->cur_map_job = new_job_id;
+        state->n_map += new_data->total_map_num;
+      }
     }
   } else {
     data->maps_completed++;
     if (data->maps_completed == data->total_map_num) {
-      state->reduce_jobs = g_list_append(state->reduce_jobs, GINT_TO_POINTER(argp->job_id));
+      state->cur_reduce_job = argp->job_id;
       state->n_reduce += data->total_reduce_num;
     }
   }
@@ -277,8 +292,9 @@ void coordinator_init(coordinator** coord_ptr) {
   /* TODO */
   coord->cur_job_id = 0;
   coord->ht = g_hash_table_new(g_bytes_hash, g_bytes_equal);
-  coord->map_jobs = NULL;
-  coord->reduce_jobs = NULL;
+  coord->cur_map_job = -1;
+  coord->cur_reduce_job = -1;
+  coord->job_queue = NULL;
   coord->n_map = 0;
   coord->n_reduce = 0;
 }

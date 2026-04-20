@@ -28,8 +28,9 @@ typedef struct {
   GHashTable *ht;
   int n_map;
   int n_reduce;
-  GList* map_jobs;
-  GList* reduce_jobs;
+  int cur_map_job;
+  int cur_reduce_job;
+  GList* job_queue;
 } coordinator;
 
 void coordinator_init(coordinator** coord_ptr);
