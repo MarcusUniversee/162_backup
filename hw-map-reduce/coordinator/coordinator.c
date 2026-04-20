@@ -166,6 +166,7 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
 
   /* TODO */
   if (state->n_map > 0) {
+    printf("running map\n");
     state->n_map--;
     //remove the first element
     GList* next_job = g_list_first(state->map_jobs);
@@ -198,6 +199,7 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     result.args.args_val = data->req->args.args_val;
 
   } else if (state->n_reduce > 0){
+    printf("running reduce\n");
     state->n_reduce--;
     //remove the first element
     GList* next_job = g_list_first(state->reduce_jobs);
