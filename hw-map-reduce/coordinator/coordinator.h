@@ -24,12 +24,18 @@
 #include <sys/stat.h>
 
 typedef struct {
+  get_task_reply* task;
+  time_t start;
+} task_t;
+
+typedef struct {
   int cur_job_id;
   GHashTable *ht;
   int n_map;
   int n_reduce;
   GList* map_jobs;
   GList* reduce_jobs;
+  GList* task_list;
 } coordinator;
 
 void coordinator_init(coordinator** coord_ptr);

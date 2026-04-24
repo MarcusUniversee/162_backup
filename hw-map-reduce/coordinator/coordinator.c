@@ -164,6 +164,15 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
   result.wait = true;
   result.args.args_len = 0;
 
+  //first check if we need to redo any task
+  task_t* t;
+  for (GList* elem = state->task_list; elem; elem = elem->next) {
+    t = elem->data;
+    if (time(NULL) - t->start > TASK_TIMEOUT_SECS) {
+      t->start = time(NULL);
+      return t->task;
+    }
+  }
   /* TODO */
   if (state->n_reduce > 0){
     printf("running reduce\n");
@@ -179,8 +188,15 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     if (value == NULL) {
       return &result;
     }
+    
+
     job **data_ptr = g_bytes_get_data(value, NULL);
     job *data = *data_ptr;
+    task_t* t = malloc(sizeof(task_t));
+    if (t == NULL) {
+      return &result;
+    }
+
     result.wait = false;
     result.reduce = true;
     result.job_id = job_id;
@@ -195,6 +211,17 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     result.n_map = data->total_map_num;
     result.args.args_len = data->req->args.args_len;
     result.args.args_val = data->req->args.args_val;
+
+    get_task_reply* copy = malloc(sizeof(get_task_reply));
+    if (copy == NULL) {
+      free(t);
+      return &result;
+    }
+    *copy = result;
+    t->task = copy;
+    t->start = time(NULL);
+    state->task_list = g_list_append(state->task_list, t);
+
   } else if (state->n_map > 0) {
     printf("running map\n");
     state->n_map--;
@@ -211,6 +238,12 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     }
     job **data_ptr = g_bytes_get_data(value, NULL);
     job *data = *data_ptr;
+
+    task_t* t = malloc(sizeof(task_t));
+    if (t == NULL) {
+      return &result;
+    }
+
     result.file = *data->req->files.files_val;
     data->req->files.files_val++;
     data->req->files.files_len--;
@@ -228,6 +261,15 @@ get_task_reply* get_task_1_svc(void* argp, struct svc_req* rqstp) {
     result.args.args_len = data->req->args.args_len;
     result.args.args_val = data->req->args.args_val;
 
+    get_task_reply* copy = malloc(sizeof(get_task_reply));
+    if (copy == NULL) {
+      free(t);
+      return &result;
+    }
+    *copy = result;
+    t->task = copy;
+    t->start = time(NULL);
+    state->task_list = g_list_append(state->task_list, t);
   }
   return &result;
 }
@@ -241,6 +283,17 @@ void* finish_task_1_svc(finish_task_request* argp, struct svc_req* rqstp) {
   GBytes *value = g_hash_table_lookup(state->ht, key);
   g_bytes_unref(key);
 
+  task_t* t;
+  for (GList* elem = state->task_list; elem; elem = elem->next) {
+    t = elem->data;
+    if (t->task->job_id == argp->job_id && t->task->task == argp->task && t->task->reduce == argp->reduce) {
+      state->task_list = g_list_delete_link(state->task_list, elem);
+      free(t->task);
+      free(t);
+      break;
+    }
+  }
+
   if (value == NULL) {
     return (void*) &result;
   }
@@ -253,11 +306,17 @@ void* finish_task_1_svc(finish_task_request* argp, struct svc_req* rqstp) {
   /* TODO */
   if (argp->reduce) {
     //reduce
+    if (data->reduces_completed >= data->total_reduce_num) {
+      return (void*)&result;
+    }
     data->reduces_completed++;
     if (data->reduces_completed == data->total_reduce_num) {
       data->status = 1;
     }
   } else {
+    if (data->maps_completed >= data->total_map_num) {
+      return (void*)&result;
+    }
     data->maps_completed++;
     if (data->maps_completed == data->total_map_num) {
       state->reduce_jobs = g_list_append(state->reduce_jobs, GINT_TO_POINTER(argp->job_id));
@@ -281,4 +340,5 @@ void coordinator_init(coordinator** coord_ptr) {
   coord->reduce_jobs = NULL;
   coord->n_map = 0;
   coord->n_reduce = 0;
+  coord->task_list = NULL;
 }
