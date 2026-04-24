@@ -137,6 +137,10 @@ poll_job_reply* poll_job_1_svc(int* argp, struct svc_req* rqstp) {
     case 2:
       result.failed = true;
       break;
+    case 3:
+      result.failed = true;
+      result.done = true;
+      break;
     default:
       //do nothing
   }
@@ -300,7 +304,7 @@ void* finish_task_1_svc(finish_task_request* argp, struct svc_req* rqstp) {
   job **data_ptr = g_bytes_get_data(value, NULL);
   job *data = *data_ptr;
   if (!argp->success) {
-    data->status = 2;
+    data->status = 3;
     return (void*) &result;
   }
   /* TODO */
