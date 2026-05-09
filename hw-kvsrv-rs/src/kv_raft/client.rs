@@ -50,10 +50,10 @@ impl KvClient for Client {
                                 Ok(()) => {
                                     return Ok((reply.value, reply.version));
                                 }
+                                Err(KVError::Maybe) => {
+                                    continue;
+                                }
                                 Err(e) => {
-                                    if e == KVError::Version && retry {
-                                        return Err(KVError::Maybe);
-                                    }
                                     return Err(e);
                                 }
                             }
