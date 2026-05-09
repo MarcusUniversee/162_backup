@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::kv_single::server::{GetArgs, PutArgs, KVServer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use std::time::Duration;
 
 
@@ -64,12 +64,10 @@ impl RSM {
     //so this syncs changes up to a specified commit, since if we get
     //at that commit, we only care about everything up to that point
     async fn sync_puts_with_commits(&self, idx: usize) {
+        let mut latest_apply = self.latest_apply.lock().await;
         loop {
-            let next_apply = {
-                let latest_apply = self.latest_apply.lock().unwrap();
-                *latest_apply + 1
-            };
-            if next_apply >= idx {
+            let next_apply = *latest_apply + 1;
+            if next_apply > idx {
                 break; //only apply changes before idx
             }
             match self.raft.get_committed(next_apply).await {
@@ -77,7 +75,7 @@ impl RSM {
                     if let Ok(args) = serde_json::from_str::<PutArgs>(&cmd) {
                         let kv_serv = self.kv.put(&args).await;
                     }
-                    *self.latest_apply.lock().unwrap() = next_apply;
+                    *latest_apply = next_apply;
                 }
                 None => {
                     break;
@@ -121,10 +119,17 @@ impl RSM {
         match self.raft_submit_commit(str_cmd).await {
             Ok(idx) => {
                 self.sync_puts_with_commits(idx).await;
-                let kv_serv = self.kv.put(args).await;
-                *self.latest_apply.lock().unwrap() = idx;
+                let get_args = GetArgs {
+                    key: args.key.clone()
+                };
+                let verify = self.kv.get(&get_args).await;
+                if verify.value == args.value && verify.version == args.version + 1 {
+                    return PutReply {
+                        err: Ok(Ok(())),
+                    }
+                }
                 return PutReply {
-                    err: Ok(kv_serv.err),
+                    err: Ok(Err(KVError::Version)),
                 }
             }
             Err(e) => {
@@ -147,7 +152,6 @@ impl RSM {
             Ok(idx) => {
                 self.sync_puts_with_commits(idx).await;
                 let kv_serv = self.kv.get(args).await;
-                *self.latest_apply.lock().unwrap() = idx;
                 return GetReply {
                     value: kv_serv.value,
                     version: kv_serv.version,
